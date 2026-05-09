@@ -54,6 +54,47 @@ body {
   margin: 0;
 }
 
+#page-index {
+  margin: 22px auto 0;
+  max-width: 520px;
+  padding: 0 16px;
+}
+
+#page-index h2 {
+  margin: 0 0 12px;
+  font-size: 20px;
+}
+
+#page-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 8px;
+}
+
+#page-list li button {
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text-h);
+  padding: 12px 14px;
+  font: inherit;
+  cursor: pointer;
+}
+
+#page-list li button.selected {
+  background: var(--accent-bg);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+#page-list li button:hover {
+  background: rgba(170, 59, 255, 0.08);
+}
+
 h1,
 h2 {
   font-family: var(--heading);

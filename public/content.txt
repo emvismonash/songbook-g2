@@ -1,3 +1,5 @@
+<<G2slides.png>>
+--
 <<hotel.png>>
 --
 <<numbers.png>>

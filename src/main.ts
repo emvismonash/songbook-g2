@@ -161,9 +161,22 @@ async function main() {
           }),
         ]
 
+        // Add invisible text container for event capture
+        const eventContainer = new TextContainerProperty({
+          xPosition: 0,
+          yPosition: 0,
+          width: 576,
+          height: 288,
+          containerID: 5,
+          containerName: 'event-layer',
+          content: '',
+          isEventCapture: 1,
+        })
+
         const result = await bridge.createStartUpPageContainer(
           new CreateStartUpPageContainer({
-            containerTotalNum: 4,
+            containerTotalNum: 5,
+            textObject: [eventContainer],
             imageObject: imageContainers,
           }),
         )
@@ -227,7 +240,6 @@ async function main() {
             height: 144,
             containerID: 1,
             containerName: 'quad-tl',
-            isEventCapture: 1,
           }),
           new ImageContainerProperty({
             xPosition: 288,
@@ -255,9 +267,22 @@ async function main() {
           }),
         ]
 
+        // Add invisible text container for event capture
+        const eventContainer = new TextContainerProperty({
+          xPosition: 0,
+          yPosition: 0,
+          width: 576,
+          height: 288,
+          containerID: 5,
+          containerName: 'event-layer',
+          content: '',
+          isEventCapture: 1,
+        })
+
         await bridge.rebuildPageContainer(
           new RebuildPageContainer({
-            containerTotalNum: 4,
+            containerTotalNum: 5,
+            textObject: [eventContainer],
             imageObject: imageContainers,
           }),
         )

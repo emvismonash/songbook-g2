@@ -7,38 +7,144 @@ import {
   RebuildPageContainer,
 } from '@evenrealities/even_hub_sdk'
 
-async function loadPagesFromFile(url: string): Promise<string[]> {
+type TextSongPage = {
+  type: 'text'
+  content: string
+  title?: string
+}
+
+type ImageSongPage = {
+  type: 'image'
+  src: string
+  title?: string
+}
+
+type SongPage = TextSongPage | ImageSongPage
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function getOptionalTitle(page: Record<string, unknown>): string | undefined {
+  return typeof page.title === 'string' && page.title.trim().length > 0
+    ? page.title.trim()
+    : undefined
+}
+
+function getTextContent(page: Record<string, unknown>, index: number) {
+  if (typeof page.content === 'string') {
+    return page.content
+  }
+
+  if (Array.isArray(page.lines) && page.lines.every((line) => typeof line === 'string')) {
+    return page.lines.join('\n')
+  }
+
+  throw new Error(`Text page ${index + 1} must include content or lines`)
+}
+
+function parseSongPage(page: unknown, index: number): SongPage {
+  if (!isRecord(page)) {
+    throw new Error(`Page ${index + 1} must be an object`)
+  }
+
+  if (page.type === 'image') {
+    if (typeof page.src !== 'string' || page.src.trim().length === 0) {
+      throw new Error(`Image page ${index + 1} must include a src`)
+    }
+
+    return {
+      type: 'image',
+      src: page.src.trim(),
+      title: getOptionalTitle(page),
+    }
+  }
+
+  if (page.type === 'text') {
+    const content = getTextContent(page, index)
+    if (content.trim().length === 0) {
+      throw new Error(`Text page ${index + 1} must not be empty`)
+    }
+
+    return {
+      type: 'text',
+      content,
+      title: getOptionalTitle(page),
+    }
+  }
+
+  throw new Error(`Page ${index + 1} must have type "image" or "text"`)
+}
+
+function parseSongbookJson(data: unknown): SongPage[] {
+  const rawPages = Array.isArray(data)
+    ? data
+    : isRecord(data) && Array.isArray(data.pages)
+      ? data.pages
+      : null
+
+  if (!rawPages) {
+    throw new Error('Songbook JSON must be an array or an object with a pages array')
+  }
+
+  const pages = rawPages.map(parseSongPage)
+  if (pages.length === 0) {
+    throw new Error('No pages found in songbook JSON')
+  }
+
+  return pages
+}
+
+async function loadPagesFromFile(url: string): Promise<SongPage[]> {
   try {
     const response = await fetch(url)
     if (!response.ok) {
       throw new Error(`Failed to load ${url}: ${response.status}`)
     }
-    const text = await response.text()
-    const rawPages = text.split(/\r?\n--\r?\n/)
-    const pages = rawPages.map((page) => page.trim()).filter((page) => page.length > 0)
-    if (pages.length > 0) {
-      return pages
-    }
-    throw new Error('No pages found in content file')
+    const data = await response.json()
+    return parseSongbookJson(data)
   } catch (error) {
     console.warn(error)
     return [
-      'Page 1: Failed to load data from content file\n\nthis is default data!\n\nSwipe up or down to navigate.',
-      'Page 2: This is the second page.\n\nUse ring or temple gestures.',
-      'Page 3: Third page here.\n\nMore content can be added.',
+      {
+        type: 'text',
+        title: 'Fallback page 1',
+        content:
+          'Page 1: Failed to load data from JSON content file\n\nthis is default data!\n\nSwipe up or down to navigate.',
+      },
+      {
+        type: 'text',
+        content: 'Page 2: This is the second page.\n\nUse ring or temple gestures.',
+      },
+      {
+        type: 'text',
+        content: 'Page 3: Third page here.\n\nMore content can be added.',
+      },
     ]
   }
 }
 
-function parseImagePage(page: string) {
-  const match = page.match(/<<\s*([^>\s]+)\s*>>/)
-  if (!match) {
-    return { imageFile: null as string | null, text: page }
+function getPageTitle(page: SongPage) {
+  if (page.title) {
+    return page.title
   }
 
-  const imageFile = match[1]
-  const text = page.replace(match[0], '').trim()
-  return { imageFile, text }
+  if (page.type === 'image') {
+    return page.src
+  }
+
+  return page.content
+    .split('\n')
+    .find((line) => line.trim().length > 0)
+    ?.trim() ?? 'Untitled'
+}
+
+function getImageUrl(src: string) {
+  if (src.startsWith('/') || src.startsWith('data:') || /^[a-z][a-z0-9+.-]*:/i.test(src)) {
+    return src
+  }
+
+  return `/${src}`
 }
 
 async function scaleAndSplitImage(imageUrl: string): Promise<Uint8Array[]> {
@@ -110,21 +216,16 @@ async function main() {
       status.textContent = 'Bridge connected. Loading page content...'
     }
 
-    let pages = await loadPagesFromFile('/content.txt')
-    let pageTitles = pages.map((page) => {
-      const { imageFile, text } = parseImagePage(page)
-      return imageFile ? imageFile : text.split('\n')[0]?.trim() ?? 'Untitled'
-    })
+    let pages = await loadPagesFromFile('/content.json')
+    let pageTitles = pages.map(getPageTitle)
     let currentPage = 0
 
     const pageList = document.querySelector<HTMLUListElement>('#page-list')
 
-    async function createStartupPage(page: string) {
-      const { imageFile, text } = parseImagePage(page)
-
-      if (imageFile) {
+    async function createStartupPage(page: SongPage) {
+      if (page.type === 'image') {
         // Image page: display 4 quadrants
-        const quadrants = await scaleAndSplitImage(`/${imageFile}`)
+        const quadrants = await scaleAndSplitImage(getImageUrl(page.src))
 
         const imageContainers = [
           new ImageContainerProperty({
@@ -207,7 +308,7 @@ async function main() {
           paddingLength: 4,
           containerID: 1,
           containerName: 'main-text',
-          content: text,
+          content: page.content,
           isEventCapture: 1,
         })
 
@@ -226,11 +327,11 @@ async function main() {
 
     async function updatePageContent(index: number) {
       currentPage = index
-      const { imageFile, text } = parseImagePage(pages[currentPage])
+      const page = pages[currentPage]
 
-      if (imageFile) {
+      if (page.type === 'image') {
         // Image page: display 4 quadrants
-        const quadrants = await scaleAndSplitImage(`/${imageFile}`)
+        const quadrants = await scaleAndSplitImage(getImageUrl(page.src))
 
         const imageContainers = [
           new ImageContainerProperty({
@@ -309,7 +410,7 @@ async function main() {
           paddingLength: 4,
           containerID: 1,
           containerName: 'main-text',
-          content: text,
+          content: page.content,
           isEventCapture: 1,
         })
 
@@ -339,20 +440,21 @@ async function main() {
         return
       }
 
-      pageList.innerHTML = pageTitles
-        .map(
-          (title, index) =>
-            `<li><button type="button" data-index="${index}">${title}</button></li>`,
-        )
-        .join('')
+      pageList.replaceChildren()
 
-      pageList.querySelectorAll('button').forEach((button) => {
+      pageTitles.forEach((title, index) => {
+        const listItem = document.createElement('li')
+        const button = document.createElement('button')
+        button.type = 'button'
+        button.dataset.index = String(index)
+        button.textContent = title
+
         button.addEventListener('click', () => {
-          const index = Number(button.dataset.index)
-          if (!Number.isNaN(index)) {
-            void updatePageContent(index)
-          }
+          void updatePageContent(index)
         })
+
+        listItem.append(button)
+        pageList.append(listItem)
       })
 
       void updatePageContent(currentPage)
@@ -370,19 +472,11 @@ async function main() {
       reader.onload = (e) => {
         try {
           const text = e.target?.result as string
-          const rawPages = text.split(/\r?\n--\r?\n/)
-          const newPages = rawPages.map((page) => page.trim()).filter((page) => page.length > 0)
-          
-          if (newPages.length === 0) {
-            throw new Error('No pages found in imported file')
-          }
+          const newPages = parseSongbookJson(JSON.parse(text))
 
           // Update pages array
           pages = newPages
-          pageTitles = pages.map((page) => {
-            const { imageFile, text } = parseImagePage(page)
-            return imageFile ? imageFile : text.split('\n')[0]?.trim() ?? 'Untitled'
-          })
+          pageTitles = pages.map(getPageTitle)
           currentPage = 0
 
           // Re-render the page list and load the first page

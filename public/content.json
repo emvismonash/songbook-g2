@@ -1,0 +1,63 @@
+{
+  "pages": [
+    {
+      "type": "image",
+      "src": "G2slides.png"
+    },
+    {
+      "type": "image",
+      "src": "hotel.png"
+    },
+    {
+      "type": "image",
+      "src": "numbers.png"
+    },
+    {
+      "type": "text",
+      "title": "Still the Same - Bob Seger",
+      "lines": [
+        "Still the Same, Bob Seger",
+        "|CM7 C |CM7 C Cadd9 |Em |G  |CM7 C |CM7 C Cadd9 |Em |G |G |",
+        "Ve. 2x ",
+        "|CM7 C |CM7 C Cadd9 |Em |G  |CM7 C |CM7 C Cadd9 |Em  |G  |",
+        "|F     |G          |C  |E  |Am    |Dm   |G  F  |Em D/F# |",
+        "Ch. 2x",
+        "|C  |E  |A   |    |Dm   |   |G  F  |Em D/F# |",
+        "Ve. 1x",
+        "Intro... fade"
+      ]
+    },
+    {
+      "type": "text",
+      "title": "Galveston - Glen Campbell",
+      "lines": [
+        "[V1,2]",
+        "|F       |Bb C7  F   |F       |FM7 F7 |Bb   |Gm7 C7 |",
+        "|F       |Bb         |Gm7  C7 |Dm         |Bb     |Csus   |F  Bb C7 |",
+        "[Bridge]",
+        "|Ab     |    Bb  |Ab    |    Bb  |Cm    |Cm   Bb   |",
+        "|Ab     |Fm  Bb7 |Eb    |Gm  Cm  |Fm    |Fm   Bb C7|",
+        "[Verse 3]",
+        "|F     |Bb C7  F  |F    |FM7 F7    |Bb   |Gm7  C7|",
+        "|F     |Bb     |Gm7 C7  |Dm   F/C  |Bb  Am  |Gm7  |",
+        "|Gm7   C    |D     |Gm7    |C   |   |"
+      ]
+    },
+    {
+      "type": "text",
+      "lines": [
+        "Page 2: This is the second page.",
+        "",
+        "Use ring or temple gestures."
+      ]
+    },
+    {
+      "type": "text",
+      "lines": [
+        "Page 3: Third page here.",
+        "",
+        "More content can be added."
+      ]
+    }
+  ]
+}

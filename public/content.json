@@ -1,16 +1,14 @@
 {
   "pages": [
     {
-      "type": "image",
-      "src": "G2slides.png"
-    },
-    {
-      "type": "image",
-      "src": "hotel.png"
-    },
-    {
-      "type": "image",
-      "src": "numbers.png"
+      "type": "text",
+      "lines": [
+        "Example content file.",
+        "Edit content.json to change the content of the songbook.",
+        "",
+        "Use ring or temple gestures to navigate forward or backward.",
+        "content can be text or images. Text can have a title and multiple lines."
+      ]
     },
     {
       "type": "text",
@@ -31,33 +29,40 @@
       "type": "text",
       "title": "Galveston - Glen Campbell",
       "lines": [
-        "[V1,2]",
-        "|F       |Bb C7  F   |F       |FM7 F7 |Bb   |Gm7 C7 |",
-        "|F       |Bb         |Gm7  C7 |Dm         |Bb     |Csus   |F  Bb C7 |",
+        "[V1,2]   Galveston, Glen Campbell",
+        "|F / / / |Bb / C7 F / |F / / / |FM7 / F7 / |Bb / / /|Gm7 / C7 / |",
+        "|F / / / |Bb / / / |Gm7 / C7 / |Dm / / / |Bb / / / |Csus / / / |F / Bb C7 |",
         "[Bridge]",
-        "|Ab     |    Bb  |Ab    |    Bb  |Cm    |Cm   Bb   |",
-        "|Ab     |Fm  Bb7 |Eb    |Gm  Cm  |Fm    |Fm   Bb C7|",
+        "|Ab / / / |/ / Bb / |Ab / / / |/ / Bb / |Cm / / / |Cm / Bb / |",
+        "|Ab / / / |Fm / Bb7 / |Eb / / / |Gm / Cm / |Fm / / / |Fm / Bb C7|",
         "[Verse 3]",
-        "|F     |Bb C7  F  |F    |FM7 F7    |Bb   |Gm7  C7|",
-        "|F     |Bb     |Gm7 C7  |Dm   F/C  |Bb  Am  |Gm7  |",
-        "|Gm7   C    |D     |Gm7    |C   |   |"
+        "|F / / / |Bb C7 F / |F / / / |FM7 / F7 / |Bb / / / |Gm7 / C7 / |",
+        "|F / / / |Bb / / / |Gm7 / C7 / |Dm / F/C / |Bb / Am / |Gm7 / |",
+        "|Gm7 / C / |D / / / |Gm7 / / / |C / / / |/ / / / |"
       ]
     },
     {
       "type": "text",
+      "title": "Angel Eyes - Frank Sinatra",
       "lines": [
-        "Page 2: This is the second page.",
-        "",
-        "Use ring or temple gestures."
+        "Angel Eyes - Frank Sinatra",
+        "Cm7 / Dm7b5 G7#5| Cm7 Ab7| Cm7 Am7b5| Dm7b5 G7#5|",
+        "Cm7 / Dm7b5 G7#5| Cm7 Am7b5| Ab7 G7#5| Cm7 / Ab7 G7#5||",
+        "Bbm7 Eb7 | Abmaj7 Adim | Bbm7 Eb7b9 | Abmaj7 Dbmaj7 |",
+        "Am7  D7 | Gmaj7 Cmaj7 | C#m7 F#7 | Dm7 G+7 ||"
       ]
     },
     {
-      "type": "text",
-      "lines": [
-        "Page 3: Third page here.",
-        "",
-        "More content can be added."
-      ]
+      "type": "image",
+      "src": "hotel.png"
+    },
+    {
+      "type": "image",
+      "src": "G2slides.png"
+    },
+    {
+      "type": "image",
+      "src": "numbers.png"
     }
   ]
 }

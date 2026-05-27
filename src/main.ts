@@ -21,6 +21,27 @@ type ImageSongPage = {
 
 type SongPage = TextSongPage | ImageSongPage
 
+type StoredImageAsset = {
+  keys: string[]
+  blob: Blob
+  name: string
+  type: string
+  updatedAt: number
+}
+
+type StoredSongbook = {
+  id: string
+  pages: SongPage[]
+  assets: StoredImageAsset[]
+  sourceName: string
+  updatedAt: number
+}
+
+const SONGBOOK_DB_NAME = 'songbook-g2'
+const SONGBOOK_DB_VERSION = 1
+const SONGBOOK_STORE_NAME = 'songbooks'
+const CURRENT_SONGBOOK_ID = 'current'
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -139,12 +160,177 @@ function getPageTitle(page: SongPage) {
     ?.trim() ?? 'Untitled'
 }
 
-function getImageUrl(src: string) {
+function getStaticImageUrl(src: string) {
   if (src.startsWith('/') || src.startsWith('data:') || /^[a-z][a-z0-9+.-]*:/i.test(src)) {
     return src
   }
 
   return `/${src}`
+}
+
+function getAssetKey(src: string) {
+  return src.replace(/^\.?\//, '')
+}
+
+function getAssetFileName(src: string) {
+  return getAssetKey(src).split('/').pop() ?? src
+}
+
+function isPngFile(file: File) {
+  return file.type === 'image/png' || file.name.toLowerCase().endsWith('.png')
+}
+
+function isJsonFile(file: File) {
+  return file.type === 'application/json' || file.name.toLowerCase().endsWith('.json')
+}
+
+function revokeUploadedImageUrls(imageUrls: Map<string, string>) {
+  new Set(imageUrls.values()).forEach((url) => URL.revokeObjectURL(url))
+  imageUrls.clear()
+}
+
+function createImageAssetsFromFiles(files: File[]) {
+  const now = Date.now()
+
+  return files.filter(isPngFile).map((file) => {
+    const keys = new Set([file.name])
+
+    if (file.webkitRelativePath) {
+      keys.add(getAssetKey(file.webkitRelativePath))
+    }
+
+    return {
+      keys: Array.from(keys),
+      blob: file.slice(0, file.size, file.type || 'image/png'),
+      name: file.name,
+      type: file.type || 'image/png',
+      updatedAt: now,
+    }
+  })
+}
+
+function createUploadedImageUrls(assets: StoredImageAsset[]) {
+  const imageUrls = new Map<string, string>()
+
+  assets.forEach((asset) => {
+    const objectUrl = URL.createObjectURL(asset.blob)
+    asset.keys.forEach((key) => {
+      imageUrls.set(key, objectUrl)
+    })
+  })
+
+  return imageUrls
+}
+
+function resolveImageUrl(src: string, uploadedImageUrls: Map<string, string>) {
+  const uploadedUrl =
+    uploadedImageUrls.get(src) ??
+    uploadedImageUrls.get(getAssetKey(src)) ??
+    uploadedImageUrls.get(getAssetFileName(src))
+
+  return uploadedUrl ?? getStaticImageUrl(src)
+}
+
+function openSongbookDb() {
+  return new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open(SONGBOOK_DB_NAME, SONGBOOK_DB_VERSION)
+
+    request.onupgradeneeded = () => {
+      const db = request.result
+      if (!db.objectStoreNames.contains(SONGBOOK_STORE_NAME)) {
+        db.createObjectStore(SONGBOOK_STORE_NAME, { keyPath: 'id' })
+      }
+    }
+
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => reject(request.error ?? new Error('Could not open songbook database'))
+  })
+}
+
+function waitForIdbRequest<T>(request: IDBRequest<T>) {
+  return new Promise<T>((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => reject(request.error ?? new Error('IndexedDB request failed'))
+  })
+}
+
+function waitForTransaction(transaction: IDBTransaction) {
+  return new Promise<void>((resolve, reject) => {
+    transaction.oncomplete = () => resolve()
+    transaction.onerror = () => reject(transaction.error ?? new Error('IndexedDB transaction failed'))
+    transaction.onabort = () => reject(transaction.error ?? new Error('IndexedDB transaction aborted'))
+  })
+}
+
+function isStoredImageAsset(value: unknown): value is StoredImageAsset {
+  return (
+    isRecord(value) &&
+    Array.isArray(value.keys) &&
+    value.keys.every((key) => typeof key === 'string') &&
+    value.blob instanceof Blob &&
+    typeof value.name === 'string' &&
+    typeof value.type === 'string' &&
+    typeof value.updatedAt === 'number'
+  )
+}
+
+function parseStoredSongbook(value: unknown): StoredSongbook | null {
+  if (!isRecord(value)) {
+    return null
+  }
+
+  const pages = parseSongbookJson(value.pages)
+  const assets = Array.isArray(value.assets) ? value.assets.filter(isStoredImageAsset) : []
+
+  return {
+    id: typeof value.id === 'string' ? value.id : CURRENT_SONGBOOK_ID,
+    pages,
+    assets,
+    sourceName: typeof value.sourceName === 'string' ? value.sourceName : 'saved content.json',
+    updatedAt: typeof value.updatedAt === 'number' ? value.updatedAt : 0,
+  }
+}
+
+async function loadStoredSongbook() {
+  if (!('indexedDB' in window)) {
+    return null
+  }
+
+  let db: IDBDatabase | null = null
+
+  try {
+    db = await openSongbookDb()
+    const transaction = db.transaction(SONGBOOK_STORE_NAME, 'readonly')
+    const stored = await waitForIdbRequest(transaction.objectStore(SONGBOOK_STORE_NAME).get(CURRENT_SONGBOOK_ID))
+    return parseStoredSongbook(stored)
+  } catch (error) {
+    console.warn('Could not load saved songbook:', error)
+    return null
+  } finally {
+    db?.close()
+  }
+}
+
+async function saveStoredSongbook(pages: SongPage[], assets: StoredImageAsset[], sourceName: string) {
+  if (!('indexedDB' in window)) {
+    throw new Error('IndexedDB is not available')
+  }
+
+  const db = await openSongbookDb()
+
+  try {
+    const transaction = db.transaction(SONGBOOK_STORE_NAME, 'readwrite')
+    transaction.objectStore(SONGBOOK_STORE_NAME).put({
+      id: CURRENT_SONGBOOK_ID,
+      pages,
+      assets,
+      sourceName,
+      updatedAt: Date.now(),
+    } satisfies StoredSongbook)
+    await waitForTransaction(transaction)
+  } finally {
+    db.close()
+  }
 }
 
 async function scaleAndSplitImage(imageUrl: string): Promise<Uint8Array[]> {
@@ -216,7 +402,11 @@ async function main() {
       status.textContent = 'Bridge connected. Loading page content...'
     }
 
-    let pages = await loadPagesFromFile('/content.json')
+    const storedSongbook = await loadStoredSongbook()
+    let uploadedImageUrls = storedSongbook
+      ? createUploadedImageUrls(storedSongbook.assets)
+      : new Map<string, string>()
+    let pages = storedSongbook?.pages ?? await loadPagesFromFile('/content.json')
     let pageTitles = pages.map(getPageTitle)
     let currentPage = 0
 
@@ -225,7 +415,7 @@ async function main() {
     async function createStartupPage(page: SongPage) {
       if (page.type === 'image') {
         // Image page: display 4 quadrants
-        const quadrants = await scaleAndSplitImage(getImageUrl(page.src))
+        const quadrants = await scaleAndSplitImage(resolveImageUrl(page.src, uploadedImageUrls))
 
         const imageContainers = [
           new ImageContainerProperty({
@@ -331,7 +521,7 @@ async function main() {
 
       if (page.type === 'image') {
         // Image page: display 4 quadrants
-        const quadrants = await scaleAndSplitImage(getImageUrl(page.src))
+        const quadrants = await scaleAndSplitImage(resolveImageUrl(page.src, uploadedImageUrls))
 
         const imageContainers = [
           new ImageContainerProperty({
@@ -467,33 +657,53 @@ async function main() {
     const importBtn = document.querySelector<HTMLButtonElement>('#import-btn')
     const fileInput = document.querySelector<HTMLInputElement>('#file-input')
 
-    function handleFileImport(file: File) {
-      const reader = new FileReader()
-      reader.onload = (e) => {
+    async function handleFileImport(fileList: FileList) {
+      const files = Array.from(fileList)
+      const jsonFile = files.find(isJsonFile)
+
+      if (!jsonFile) {
+        if (status) {
+          status.textContent = 'Choose a content.json file to import.'
+        }
+        return
+      }
+
+      try {
+        const newPages = parseSongbookJson(JSON.parse(await jsonFile.text()))
+        const imageAssets = createImageAssetsFromFiles(files)
+        const newUploadedImageUrls = createUploadedImageUrls(imageAssets)
+        let savedToDevice = true
+
         try {
-          const text = e.target?.result as string
-          const newPages = parseSongbookJson(JSON.parse(text))
-
-          // Update pages array
-          pages = newPages
-          pageTitles = pages.map(getPageTitle)
-          currentPage = 0
-
-          // Re-render the page list and load the first page
-          renderPageIndex()
-          void updatePageContent(currentPage)
-
-          if (status) {
-            status.textContent = `Loaded ${newPages.length} pages from ${file.name}`
-          }
+          await saveStoredSongbook(newPages, imageAssets, jsonFile.name)
         } catch (error) {
-          console.error('Error importing file:', error)
-          if (status) {
-            status.textContent = `Error importing file: ${error instanceof Error ? error.message : 'Unknown error'}`
-          }
+          savedToDevice = false
+          console.warn('Imported songbook could not be saved:', error)
+        }
+
+        revokeUploadedImageUrls(uploadedImageUrls)
+        uploadedImageUrls = newUploadedImageUrls
+
+        // Update pages array
+        pages = newPages
+        pageTitles = pages.map(getPageTitle)
+        currentPage = 0
+
+        // Re-render the page list and load the first page
+        renderPageIndex()
+
+        if (status) {
+          const imageCount = new Set(newUploadedImageUrls.values()).size
+          status.textContent =
+            `Loaded ${newPages.length} pages and ${imageCount} image${imageCount === 1 ? '' : 's'} from ${jsonFile.name}` +
+            (savedToDevice ? ' and saved them on this device.' : ', but could not save them on this device.')
+        }
+      } catch (error) {
+        console.error('Error importing files:', error)
+        if (status) {
+          status.textContent = `Error importing files: ${error instanceof Error ? error.message : 'Unknown error'}`
         }
       }
-      reader.readAsText(file)
     }
 
     if (importBtn) {
@@ -504,9 +714,9 @@ async function main() {
 
     if (fileInput) {
       fileInput.addEventListener('change', (e) => {
-        const file = (e.target as HTMLInputElement).files?.[0]
-        if (file) {
-          handleFileImport(file)
+        const files = (e.target as HTMLInputElement).files
+        if (files && files.length > 0) {
+          void handleFileImport(files)
           // Reset the input so the same file can be imported again
           fileInput.value = ''
         }

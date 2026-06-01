@@ -6,6 +6,7 @@ import {
   ImageRawDataUpdate,
   RebuildPageContainer,
 } from '@evenrealities/even_hub_sdk'
+import type { EvenAppBridge } from '@evenrealities/even_hub_sdk'
 
 type TextSongPage = {
   type: 'text'
@@ -21,7 +22,7 @@ type ImageSongPage = {
 
 type SongPage = TextSongPage | ImageSongPage
 
-type StoredImageAsset = {
+type ImageAsset = {
   keys: string[]
   blob: Blob
   name: string
@@ -29,17 +30,33 @@ type StoredImageAsset = {
   updatedAt: number
 }
 
+type StoredImageAsset = Omit<ImageAsset, 'blob'> & {
+  chunkCount: number
+}
+
 type StoredSongbook = {
-  id: string
   pages: SongPage[]
-  assets: StoredImageAsset[]
+  assets: ImageAsset[]
   sourceName: string
   updatedAt: number
 }
 
-const SONGBOOK_DB_NAME = 'songbook-g2'
-const SONGBOOK_DB_VERSION = 1
-const SONGBOOK_STORE_NAME = 'songbooks'
+type StoredSongbookManifest = Omit<StoredSongbook, 'assets'> & {
+  schemaVersion: 1
+  assets: StoredImageAsset[]
+}
+
+type IdbSongbookRecord = StoredSongbook & {
+  id: string
+}
+
+const SONGBOOK_STORAGE_PREFIX = 'songbook-g2'
+const SONGBOOK_MANIFEST_KEY = `${SONGBOOK_STORAGE_PREFIX}:manifest`
+const SONGBOOK_CHUNK_LENGTH = 50_000
+const SONGBOOK_STORAGE_TIMEOUT_MS = 2_000
+const SONGBOOK_IDB_NAME = 'songbook-g2'
+const SONGBOOK_IDB_VERSION = 1
+const SONGBOOK_IDB_STORE_NAME = 'songbooks'
 const CURRENT_SONGBOOK_ID = 'current'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -209,7 +226,7 @@ function createImageAssetsFromFiles(files: File[]) {
   })
 }
 
-function createUploadedImageUrls(assets: StoredImageAsset[]) {
+function createUploadedImageUrls(assets: ImageAsset[]) {
   const imageUrls = new Map<string, string>()
 
   assets.forEach((asset) => {
@@ -231,38 +248,26 @@ function resolveImageUrl(src: string, uploadedImageUrls: Map<string, string>) {
   return uploadedUrl ?? getStaticImageUrl(src)
 }
 
-function openSongbookDb() {
-  return new Promise<IDBDatabase>((resolve, reject) => {
-    const request = indexedDB.open(SONGBOOK_DB_NAME, SONGBOOK_DB_VERSION)
-
-    request.onupgradeneeded = () => {
-      const db = request.result
-      if (!db.objectStoreNames.contains(SONGBOOK_STORE_NAME)) {
-        db.createObjectStore(SONGBOOK_STORE_NAME, { keyPath: 'id' })
-      }
-    }
-
-    request.onsuccess = () => resolve(request.result)
-    request.onerror = () => reject(request.error ?? new Error('Could not open songbook database'))
-  })
-}
-
-function waitForIdbRequest<T>(request: IDBRequest<T>) {
-  return new Promise<T>((resolve, reject) => {
-    request.onsuccess = () => resolve(request.result)
-    request.onerror = () => reject(request.error ?? new Error('IndexedDB request failed'))
-  })
-}
-
-function waitForTransaction(transaction: IDBTransaction) {
-  return new Promise<void>((resolve, reject) => {
-    transaction.oncomplete = () => resolve()
-    transaction.onerror = () => reject(transaction.error ?? new Error('IndexedDB transaction failed'))
-    transaction.onabort = () => reject(transaction.error ?? new Error('IndexedDB transaction aborted'))
-  })
-}
-
 function isStoredImageAsset(value: unknown): value is StoredImageAsset {
+  if (!isRecord(value)) {
+    return false
+  }
+
+  const chunkCount = value.chunkCount
+
+  return (
+    Array.isArray(value.keys) &&
+    value.keys.every((key) => typeof key === 'string') &&
+    typeof value.name === 'string' &&
+    typeof value.type === 'string' &&
+    typeof value.updatedAt === 'number' &&
+    typeof chunkCount === 'number' &&
+    Number.isInteger(chunkCount) &&
+    chunkCount >= 0
+  )
+}
+
+function isImageAsset(value: unknown): value is ImageAsset {
   return (
     isRecord(value) &&
     Array.isArray(value.keys) &&
@@ -274,7 +279,7 @@ function isStoredImageAsset(value: unknown): value is StoredImageAsset {
   )
 }
 
-function parseStoredSongbook(value: unknown): StoredSongbook | null {
+function parseStoredSongbookManifest(value: unknown): StoredSongbookManifest | null {
   if (!isRecord(value)) {
     return null
   }
@@ -283,7 +288,7 @@ function parseStoredSongbook(value: unknown): StoredSongbook | null {
   const assets = Array.isArray(value.assets) ? value.assets.filter(isStoredImageAsset) : []
 
   return {
-    id: typeof value.id === 'string' ? value.id : CURRENT_SONGBOOK_ID,
+    schemaVersion: 1,
     pages,
     assets,
     sourceName: typeof value.sourceName === 'string' ? value.sourceName : 'saved content.json',
@@ -291,7 +296,143 @@ function parseStoredSongbook(value: unknown): StoredSongbook | null {
   }
 }
 
-async function loadStoredSongbook() {
+function parseIdbSongbookRecord(value: unknown): StoredSongbook | null {
+  if (!isRecord(value)) {
+    return null
+  }
+
+  const pages = parseSongbookJson(value.pages)
+  const assets = Array.isArray(value.assets) ? value.assets.filter(isImageAsset) : []
+
+  return {
+    pages,
+    assets,
+    sourceName: typeof value.sourceName === 'string' ? value.sourceName : 'saved content.json',
+    updatedAt: typeof value.updatedAt === 'number' ? value.updatedAt : 0,
+  }
+}
+
+function getAssetChunkKey(assetIndex: number, chunkIndex: number) {
+  return `${SONGBOOK_STORAGE_PREFIX}:asset:${assetIndex}:${chunkIndex}`
+}
+
+function chunkString(value: string) {
+  const chunks: string[] = []
+
+  for (let index = 0; index < value.length; index += SONGBOOK_CHUNK_LENGTH) {
+    chunks.push(value.slice(index, index + SONGBOOK_CHUNK_LENGTH))
+  }
+
+  return chunks
+}
+
+function blobToDataUrl(blob: Blob) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        resolve(reader.result)
+      } else {
+        reject(new Error('Could not read image data'))
+      }
+    }
+    reader.onerror = () => reject(reader.error ?? new Error('Could not read image data'))
+    reader.readAsDataURL(blob)
+  })
+}
+
+function dataUrlToBlob(dataUrl: string, fallbackType: string) {
+  const commaIndex = dataUrl.indexOf(',')
+  if (commaIndex === -1) {
+    throw new Error('Stored image data is not a valid data URL')
+  }
+
+  const header = dataUrl.slice(0, commaIndex)
+  const base64Data = dataUrl.slice(commaIndex + 1)
+  const type = header.match(/^data:([^;,]+)/)?.[1] ?? fallbackType
+  const binaryString = atob(base64Data)
+  const bytes = new Uint8Array(binaryString.length)
+
+  for (let index = 0; index < binaryString.length; index++) {
+    bytes[index] = binaryString.charCodeAt(index)
+  }
+
+  return new Blob([bytes], { type })
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, description: string) {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => {
+      window.setTimeout(() => reject(new Error(`${description} timed out`)), timeoutMs)
+    }),
+  ])
+}
+
+function getBridgeStorage(bridge: EvenAppBridge, key: string) {
+  return withTimeout(
+    bridge.getLocalStorage(key),
+    SONGBOOK_STORAGE_TIMEOUT_MS,
+    `Reading ${key}`,
+  )
+}
+
+async function setBridgeStorage(bridge: EvenAppBridge, key: string, value: string) {
+  const success = await withTimeout(
+    bridge.setLocalStorage(key, value),
+    SONGBOOK_STORAGE_TIMEOUT_MS,
+    `Saving ${key}`,
+  )
+
+  if (!success) {
+    throw new Error(`Could not save ${key}`)
+  }
+}
+
+async function readStoredSongbookManifest(bridge: EvenAppBridge) {
+  const rawManifest = await getBridgeStorage(bridge, SONGBOOK_MANIFEST_KEY)
+
+  if (!rawManifest.trim()) {
+    return null
+  }
+
+  return parseStoredSongbookManifest(JSON.parse(rawManifest))
+}
+
+function openSongbookIdb() {
+  return new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open(SONGBOOK_IDB_NAME, SONGBOOK_IDB_VERSION)
+
+    request.onupgradeneeded = () => {
+      const db = request.result
+      if (!db.objectStoreNames.contains(SONGBOOK_IDB_STORE_NAME)) {
+        db.createObjectStore(SONGBOOK_IDB_STORE_NAME, { keyPath: 'id' })
+      }
+    }
+
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => reject(request.error ?? new Error('Could not open simulator storage'))
+  })
+}
+
+function waitForIdbRequest<T>(request: IDBRequest<T>) {
+  return new Promise<T>((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => reject(request.error ?? new Error('Simulator storage request failed'))
+  })
+}
+
+function waitForIdbTransaction(transaction: IDBTransaction) {
+  return new Promise<void>((resolve, reject) => {
+    transaction.oncomplete = () => resolve()
+    transaction.onerror = () =>
+      reject(transaction.error ?? new Error('Simulator storage transaction failed'))
+    transaction.onabort = () =>
+      reject(transaction.error ?? new Error('Simulator storage transaction aborted'))
+  })
+}
+
+async function loadIdbStoredSongbook() {
   if (!('indexedDB' in window)) {
     return null
   }
@@ -299,37 +440,174 @@ async function loadStoredSongbook() {
   let db: IDBDatabase | null = null
 
   try {
-    db = await openSongbookDb()
-    const transaction = db.transaction(SONGBOOK_STORE_NAME, 'readonly')
-    const stored = await waitForIdbRequest(transaction.objectStore(SONGBOOK_STORE_NAME).get(CURRENT_SONGBOOK_ID))
-    return parseStoredSongbook(stored)
+    db = await openSongbookIdb()
+    const transaction = db.transaction(SONGBOOK_IDB_STORE_NAME, 'readonly')
+    const stored = await waitForIdbRequest(
+      transaction.objectStore(SONGBOOK_IDB_STORE_NAME).get(CURRENT_SONGBOOK_ID),
+    )
+    return parseIdbSongbookRecord(stored)
   } catch (error) {
-    console.warn('Could not load saved songbook:', error)
+    console.warn('Could not load simulator songbook storage:', error)
     return null
   } finally {
     db?.close()
   }
 }
 
-async function saveStoredSongbook(pages: SongPage[], assets: StoredImageAsset[], sourceName: string) {
+async function saveIdbStoredSongbook(pages: SongPage[], assets: ImageAsset[], sourceName: string) {
   if (!('indexedDB' in window)) {
     throw new Error('IndexedDB is not available')
   }
 
-  const db = await openSongbookDb()
+  const db = await openSongbookIdb()
 
   try {
-    const transaction = db.transaction(SONGBOOK_STORE_NAME, 'readwrite')
-    transaction.objectStore(SONGBOOK_STORE_NAME).put({
+    const transaction = db.transaction(SONGBOOK_IDB_STORE_NAME, 'readwrite')
+    transaction.objectStore(SONGBOOK_IDB_STORE_NAME).put({
       id: CURRENT_SONGBOOK_ID,
       pages,
       assets,
       sourceName,
       updatedAt: Date.now(),
-    } satisfies StoredSongbook)
-    await waitForTransaction(transaction)
+    } satisfies IdbSongbookRecord)
+    await waitForIdbTransaction(transaction)
   } finally {
     db.close()
+  }
+}
+
+async function loadSdkStoredSongbook(bridge: EvenAppBridge) {
+  try {
+    const manifest = await readStoredSongbookManifest(bridge)
+    if (!manifest) {
+      return null
+    }
+
+    const assets: ImageAsset[] = []
+
+    for (let assetIndex = 0; assetIndex < manifest.assets.length; assetIndex++) {
+      const asset = manifest.assets[assetIndex]
+      const chunks: string[] = []
+
+      for (let chunkIndex = 0; chunkIndex < asset.chunkCount; chunkIndex++) {
+        const chunk = await getBridgeStorage(bridge, getAssetChunkKey(assetIndex, chunkIndex))
+        if (!chunk) {
+          throw new Error(`Missing stored image chunk ${assetIndex}:${chunkIndex}`)
+        }
+        chunks.push(chunk)
+      }
+
+      assets.push({
+        keys: asset.keys,
+        blob: dataUrlToBlob(chunks.join(''), asset.type),
+        name: asset.name,
+        type: asset.type,
+        updatedAt: asset.updatedAt,
+      })
+    }
+
+    return {
+      pages: manifest.pages,
+      assets,
+      sourceName: manifest.sourceName,
+      updatedAt: manifest.updatedAt,
+    }
+  } catch (error) {
+    console.warn('Could not load saved songbook:', error)
+    return null
+  }
+}
+
+async function loadStoredSongbook(bridge: EvenAppBridge) {
+  const sdkSongbook = await loadSdkStoredSongbook(bridge)
+
+  if (sdkSongbook) {
+    return sdkSongbook
+  }
+
+  return loadIdbStoredSongbook()
+}
+
+async function clearOldStoredAssetChunks(
+  bridge: EvenAppBridge,
+  oldManifest: StoredSongbookManifest | null,
+  newManifest: StoredSongbookManifest,
+) {
+  if (!oldManifest) {
+    return
+  }
+
+  const activeKeys = new Set<string>()
+  newManifest.assets.forEach((asset, assetIndex) => {
+    for (let chunkIndex = 0; chunkIndex < asset.chunkCount; chunkIndex++) {
+      activeKeys.add(getAssetChunkKey(assetIndex, chunkIndex))
+    }
+  })
+
+  for (let assetIndex = 0; assetIndex < oldManifest.assets.length; assetIndex++) {
+    const oldAsset = oldManifest.assets[assetIndex]
+    for (let chunkIndex = 0; chunkIndex < oldAsset.chunkCount; chunkIndex++) {
+      const key = getAssetChunkKey(assetIndex, chunkIndex)
+      if (!activeKeys.has(key)) {
+        await setBridgeStorage(bridge, key, '')
+      }
+    }
+  }
+}
+
+async function saveSdkStoredSongbook(
+  bridge: EvenAppBridge,
+  pages: SongPage[],
+  assets: ImageAsset[],
+  sourceName: string,
+) {
+  const oldManifest = await readStoredSongbookManifest(bridge).catch(() => null)
+  const storedAssets: StoredImageAsset[] = []
+
+  for (let assetIndex = 0; assetIndex < assets.length; assetIndex++) {
+    const asset = assets[assetIndex]
+    const chunks = chunkString(await blobToDataUrl(asset.blob))
+
+    for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
+      await setBridgeStorage(bridge, getAssetChunkKey(assetIndex, chunkIndex), chunks[chunkIndex])
+    }
+
+    storedAssets.push({
+      keys: asset.keys,
+      name: asset.name,
+      type: asset.type,
+      updatedAt: asset.updatedAt,
+      chunkCount: chunks.length,
+    })
+  }
+
+  const manifest: StoredSongbookManifest = {
+    schemaVersion: 1,
+    pages,
+    assets: storedAssets,
+    sourceName,
+    updatedAt: Date.now(),
+  }
+
+  await setBridgeStorage(bridge, SONGBOOK_MANIFEST_KEY, JSON.stringify(manifest))
+  await clearOldStoredAssetChunks(bridge, oldManifest, manifest).catch((error) => {
+    console.warn('Could not clear old stored image chunks:', error)
+  })
+}
+
+async function saveStoredSongbook(
+  bridge: EvenAppBridge,
+  pages: SongPage[],
+  assets: ImageAsset[],
+  sourceName: string,
+) {
+  try {
+    await saveSdkStoredSongbook(bridge, pages, assets, sourceName)
+    return 'device'
+  } catch (error) {
+    console.warn('Could not save to device storage; trying simulator storage:', error)
+    await saveIdbStoredSongbook(pages, assets, sourceName)
+    return 'simulator'
   }
 }
 
@@ -402,7 +680,7 @@ async function main() {
       status.textContent = 'Bridge connected. Loading page content...'
     }
 
-    const storedSongbook = await loadStoredSongbook()
+    const storedSongbook = await loadStoredSongbook(bridge)
     let uploadedImageUrls = storedSongbook
       ? createUploadedImageUrls(storedSongbook.assets)
       : new Map<string, string>()
@@ -672,14 +950,6 @@ async function main() {
         const newPages = parseSongbookJson(JSON.parse(await jsonFile.text()))
         const imageAssets = createImageAssetsFromFiles(files)
         const newUploadedImageUrls = createUploadedImageUrls(imageAssets)
-        let savedToDevice = true
-
-        try {
-          await saveStoredSongbook(newPages, imageAssets, jsonFile.name)
-        } catch (error) {
-          savedToDevice = false
-          console.warn('Imported songbook could not be saved:', error)
-        }
 
         revokeUploadedImageUrls(uploadedImageUrls)
         uploadedImageUrls = newUploadedImageUrls
@@ -692,11 +962,25 @@ async function main() {
         // Re-render the page list and load the first page
         renderPageIndex()
 
+        const imageCount = new Set(newUploadedImageUrls.values()).size
+
         if (status) {
-          const imageCount = new Set(newUploadedImageUrls.values()).size
-          status.textContent =
-            `Loaded ${newPages.length} pages and ${imageCount} image${imageCount === 1 ? '' : 's'} from ${jsonFile.name}` +
-            (savedToDevice ? ' and saved them on this device.' : ', but could not save them on this device.')
+          status.textContent = `Loaded ${newPages.length} pages and ${imageCount} image${imageCount === 1 ? '' : 's'} from ${jsonFile.name}. Saving...`
+        }
+
+        try {
+          const storageTarget = await saveStoredSongbook(bridge, newPages, imageAssets, jsonFile.name)
+          if (status) {
+            status.textContent =
+              storageTarget === 'device'
+                ? `Loaded ${newPages.length} pages and ${imageCount} image${imageCount === 1 ? '' : 's'} from ${jsonFile.name} and saved them on this device.`
+                : `Loaded ${newPages.length} pages and ${imageCount} image${imageCount === 1 ? '' : 's'} from ${jsonFile.name} and saved them in simulator storage.`
+          }
+        } catch (error) {
+          console.warn('Imported songbook could not be saved:', error)
+          if (status) {
+            status.textContent = `Loaded ${newPages.length} pages and ${imageCount} image${imageCount === 1 ? '' : 's'} from ${jsonFile.name}, but could not save them on this device.`
+          }
         }
       } catch (error) {
         console.error('Error importing files:', error)
